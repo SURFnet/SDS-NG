@@ -1,3 +1,5 @@
+import './index.css';
+
 // UI Components
 export * from './components/ui/accordion'
 export * from './components/ui/alert'
