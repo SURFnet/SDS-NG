@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { toast } from 'sonner'
 
 import {
@@ -37,6 +37,10 @@ import {
   Alert, AlertTitle, AlertDescription,
   Toaster,
   Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, TableRow,
+  Breadcrumb, BreadcrumbList, BreadcrumbItem, BreadcrumbPage,
+  DataTable, createSelectColumn, type ColumnDef,
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
+  DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator,
 } from '@surfnet/sds-ng'
 import {
   IconLayoutDashboard,
@@ -55,11 +59,13 @@ import {
   IconNetwork,
   IconServer,
   IconBuildingCommunity,
+  IconSun,
+  IconMoon,
 } from '@tabler/icons-react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type Page = 'overview' | 'form' | 'table' | 'feedback' | 'typography'
+type Page = 'overview' | 'form' | 'table' | 'data-table' | 'feedback' | 'typography'
 
 // ─── Mock data ────────────────────────────────────────────────────────────────
 
@@ -73,14 +79,131 @@ const institutions = [
   { id: 7, name: 'Brookfield University', contact: 'e.visser@brookfield.nl', role: 'Manager', status: 'Inactive', joined: '2022-06-21' },
 ]
 
+// ─── Data-table column definitions ───────────────────────────────────────────
+
+type Institution = typeof institutions[number]
+
+const institutionColumns: ColumnDef<Institution>[] = [
+  createSelectColumn<Institution>(),
+  {
+    accessorKey: 'name',
+    header: ({ column }) => (
+      <Button
+        variant="ghost"
+        size="sm"
+        className="-ml-2"
+        onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+      >
+        Institution
+        <span className="ml-1 opacity-60">
+          {column.getIsSorted() === 'asc' ? '↑' : column.getIsSorted() === 'desc' ? '↓' : '↕'}
+        </span>
+      </Button>
+    ),
+    cell: ({ row }) => (
+      <div className="flex items-center gap-2 font-medium">
+        <Avatar size="sm">
+          <AvatarImage src={`https://api.dicebear.com/9.x/initials/svg?seed=${encodeURIComponent(row.getValue('name'))}`} />
+          <AvatarFallback>{(row.getValue('name') as string).slice(0, 2).toUpperCase()}</AvatarFallback>
+        </Avatar>
+        {row.getValue('name')}
+      </div>
+    ),
+  },
+  {
+    accessorKey: 'contact',
+    header: ({ column }) => (
+      <Button
+        variant="ghost"
+        size="sm"
+        className="-ml-2"
+        onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+      >
+        Contact
+        <span className="ml-1 opacity-60">
+          {column.getIsSorted() === 'asc' ? '↑' : column.getIsSorted() === 'desc' ? '↓' : '↕'}
+        </span>
+      </Button>
+    ),
+    cell: ({ row }) => <span className="text-muted-foreground">{row.getValue('contact')}</span>,
+  },
+  {
+    accessorKey: 'role',
+    header: ({ column }) => (
+      <Button
+        variant="ghost"
+        size="sm"
+        className="-ml-2"
+        onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+      >
+        Role
+        <span className="ml-1 opacity-60">
+          {column.getIsSorted() === 'asc' ? '↑' : column.getIsSorted() === 'desc' ? '↓' : '↕'}
+        </span>
+      </Button>
+    ),
+  },
+  {
+    accessorKey: 'status',
+    header: 'Status',
+    cell: ({ row }) => <StatusBadge status={row.getValue('status')} />,
+    enableSorting: false,
+  },
+  {
+    accessorKey: 'joined',
+    header: ({ column }) => (
+      <Button
+        variant="ghost"
+        size="sm"
+        className="-ml-2"
+        onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+      >
+        Joined
+        <span className="ml-1 opacity-60">
+          {column.getIsSorted() === 'asc' ? '↑' : column.getIsSorted() === 'desc' ? '↓' : '↕'}
+        </span>
+      </Button>
+    ),
+    cell: ({ row }) => <span className="text-muted-foreground">{row.getValue('joined')}</span>,
+  },
+  {
+    id: 'actions',
+    enableHiding: false,
+    enableSorting: false,
+    cell: ({ row }) => {
+      const inst = row.original
+      return (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon">
+              <span className="sr-only">Open menu</span>
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuLabel>Actions</DropdownMenuLabel>
+            <DropdownMenuItem onClick={() => navigator.clipboard.writeText(inst.contact)}>
+              Copy email
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem>View details</DropdownMenuItem>
+            <DropdownMenuItem>Edit institution</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )
+    },
+  },
+]
+
 // ─── Sidebar nav config ───────────────────────────────────────────────────────
 
 const navItems: { page: Page; label: string; icon: React.ReactNode; children?: { label: string; page: Page }[] }[] = [
-  { page: 'overview',   label: 'Overview',   icon: <IconLayoutDashboard size={16} /> },
-  { page: 'form',       label: 'Form',       icon: <IconForms size={16} /> },
-  { page: 'table',      label: 'Table',      icon: <IconTable size={16} /> },
-  { page: 'feedback',   label: 'Feedback',   icon: <IconBell size={16} /> },
-  { page: 'typography', label: 'Typography', icon: <IconTypography size={16} /> },
+  { page: 'overview',   label: 'Overview',    icon: <IconLayoutDashboard size={16} /> },
+  { page: 'form',       label: 'Form',        icon: <IconForms size={16} /> },
+  { page: 'table',      label: 'Table',       icon: <IconTable size={16} /> },
+  { page: 'data-table', label: 'Data Table',  icon: <IconTable size={16} /> },
+  { page: 'feedback',   label: 'Feedback',    icon: <IconBell size={16} /> },
+  { page: 'typography', label: 'Typography',  icon: <IconTypography size={16} /> },
 ]
 
 const accountItems = [
@@ -436,7 +559,31 @@ function TablePage() {
   )
 }
 
-// ─── Page: Feedback ──────────────────────────────────────────────────────────
+// ─── Page: Data Table ─────────────────────────────────────────────────────────
+
+function DataTablePage() {
+  return (
+    <div className="flex flex-col gap-4">
+      <Card>
+        <CardHeader>
+          <CardTitle>Registered institutions</CardTitle>
+          <CardDescription>
+            Powered by @tanstack/react-table — sorting, filtering, pagination and column visibility.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <DataTable
+            columns={institutionColumns}
+            data={institutions}
+            filterColumn="contact"
+            filterPlaceholder="Filter by contact email…"
+            defaultPageSize={4}
+          />
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
 
 function FeedbackPage() {
   return (
@@ -585,16 +732,42 @@ function TypographyPage() {
 // ─── App shell ────────────────────────────────────────────────────────────────
 
 const pageTitles: Record<Page, string> = {
-  overview:   'Overview',
-  form:       'Form',
-  table:      'Table',
-  feedback:   'Feedback',
-  typography: 'Typography',
+  overview:     'Overview',
+  form:         'Form',
+  table:        'Table',
+  'data-table': 'Data Table',
+  feedback:     'Feedback',
+  typography:   'Typography',
 }
+
+const themes: { value: string; label: string }[] = [
+  { value: '',                          label: 'SURF Blue (default)' },
+  { value: 'theme-surf-turquoise',      label: 'SURF Turquoise' },
+  { value: 'theme-surf-green',          label: 'SURF Green' },
+  { value: 'theme-surf-purple',         label: 'SURF Purple' },
+  { value: 'theme-surf-orange',         label: 'SURF Orange' },
+  { value: 'theme-surf-yellow',         label: 'SURF Yellow' },
+  { value: 'theme-groenvermogen-nkph2', label: 'Groenvermogen / NKPH2' },
+  { value: 'theme-studielink-aii',      label: 'Studielink Aii' },
+  { value: 'theme-shadcn-default',      label: 'ShadCN default' },
+  { value: 'theme-maartje',             label: 'Maartje' },
+]
 
 export default function App() {
   const [activePage, setActivePage] = useState<Page>('overview')
   const [platformOpen, setPlatformOpen] = useState(true)
+  const [theme, setTheme] = useState('')
+  const [dark, setDark] = useState(false)
+
+  useEffect(() => {
+    const html = document.documentElement
+    html.classList.forEach(cls => { if (cls.startsWith('theme-')) html.classList.remove(cls) })
+    if (theme) html.classList.add(theme)
+  }, [theme])
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', dark)
+  }, [dark])
 
   return (
     <SidebarProvider>
@@ -631,7 +804,7 @@ export default function App() {
                 <SidebarMenuItem>
                   <SidebarMenuButton
                     onClick={() => setPlatformOpen(o => !o)}
-                    isActive={['form', 'table', 'feedback', 'typography'].includes(activePage)}
+                    isActive={['form', 'table', 'data-table', 'feedback', 'typography'].includes(activePage)}
                     tooltip="Platform"
                   >
                     <IconLayoutDashboard size={16} />
@@ -722,16 +895,51 @@ export default function App() {
         <header className="flex h-14 items-center gap-3 border-b px-4 shrink-0">
           <SidebarTrigger />
           <Separator orientation="vertical" className="h-5" />
-          <h1 className="text-sm font-semibold">{pageTitles[activePage]}</h1>
+
+          <Breadcrumb>
+            <BreadcrumbList>
+              <BreadcrumbItem>
+                <BreadcrumbPage>{pageTitles[activePage]}</BreadcrumbPage>
+              </BreadcrumbItem>
+            </BreadcrumbList>
+          </Breadcrumb>
+
+          <div className="ml-auto flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setDark(d => !d)}
+              aria-label={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+            >
+              {dark ? <IconSun size={16} /> : <IconMoon size={16} />}
+            </Button>
+
+            <Select
+              value={theme || '__default__'}
+              onValueChange={v => setTheme(v === '__default__' ? '' : v)}
+            >
+              <SelectTrigger size="sm" className="w-52">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {themes.map(t => (
+                  <SelectItem key={t.value || '__default__'} value={t.value || '__default__'}>
+                    {t.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </header>
 
         {/* Page content */}
         <main className="flex-1 overflow-auto p-6">
-          {activePage === 'overview'   && <OverviewPage />}
-          {activePage === 'form'       && <FormPage />}
-          {activePage === 'table'      && <TablePage />}
-          {activePage === 'feedback'   && <FeedbackPage />}
-          {activePage === 'typography' && <TypographyPage />}
+          {activePage === 'overview'    && <OverviewPage />}
+          {activePage === 'form'        && <FormPage />}
+          {activePage === 'table'       && <TablePage />}
+          {activePage === 'data-table'  && <DataTablePage />}
+          {activePage === 'feedback'    && <FeedbackPage />}
+          {activePage === 'typography'  && <TypographyPage />}
         </main>
       </SidebarInset>
     </SidebarProvider>

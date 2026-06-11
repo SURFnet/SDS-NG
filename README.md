@@ -407,6 +407,7 @@ dist/            # build output (not committed)
 ```bash
 # Bump the version in package.json first, then:
 yarn build
+npm login
 npm publish --access public
 ```
 

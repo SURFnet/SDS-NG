@@ -9,7 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@surfnet/sds-ng": "0.0.1",
+    "@surfnet/sds-ng": "0.0.3",
+    "@tanstack/react-table": "^8.0.0",
     "@tabler/icons-react": "^3.44.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

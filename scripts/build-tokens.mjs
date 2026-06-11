@@ -3,8 +3,19 @@
  * build-tokens.mjs
  *
  * Fetches design tokens from the Figma Variables API and generates
- * src/new-figma.css using Style Dictionary — a drop-in replacement
- * for src/figma.css (Tailwind v4 @theme bridge + :root + .dark blocks).
+ * src/new-figma.css using Style Dictionary.
+ *
+ * Output structure:
+ *   @theme inline { … }          — Tailwind v4 bridges
+ *   :root { … }                  — default theme (SURF Blue), light mode
+ *   .dark { … }                  — dark mode overrides
+ *   .theme-surf-green { … }      — per-theme light overrides (only differing vars)
+ *   .dark.theme-surf-green { … } — per-theme dark overrides
+ *   … (one block pair per theme)
+ *
+ * Switch themes by adding a class to <html>:
+ *   <html class="theme-surf-green">
+ *   <html class="dark theme-surf-green">
  *
  * Usage:
  *   node scripts/build-tokens.mjs [--theme "SURF Blue"] [--output src/new-figma.css]
@@ -31,10 +42,10 @@ const { values: args } = parseArgs({
   strict: false,
 });
 
-const THEME_NAME    = args.theme;
-const OUTPUT_PATH   = args.output;
-const FIGMA_TOKEN   = process.env.FIGMA_TOKEN;
-const FIGMA_FILE_ID = process.env.FIGMA_FILE_ID;
+const DEFAULT_THEME  = args.theme;
+const OUTPUT_PATH    = args.output;
+const FIGMA_TOKEN    = process.env.FIGMA_TOKEN;
+const FIGMA_FILE_ID  = process.env.FIGMA_FILE_ID;
 
 if (!FIGMA_TOKEN)   { console.error('ERROR: FIGMA_TOKEN is not set. Add it to .env'); process.exit(1); }
 if (!FIGMA_FILE_ID) { console.error('ERROR: FIGMA_FILE_ID is not set. Add it to .env'); process.exit(1); }
@@ -94,20 +105,23 @@ const { col: modeCol } = modeEntry;
 const lightModeId = modeCol.modes.find((m) => m.name === 'Light').modeId;
 const darkModeId  = modeCol.modes.find((m) => m.name === 'Dark').modeId;
 
-// "2. Theme" — per-brand palette + typography + spacing; must contain the requested theme
-const themeEntry = findCollection('2. Theme', [THEME_NAME]);
+// "2. Theme" — per-brand palette + typography + spacing
+const themeEntry = findCollection('2. Theme', [DEFAULT_THEME]);
 if (!themeEntry) {
   const available = Object.values(collections)
     .filter((c) => c.name.includes('Theme'))
     .flatMap((c) => c.modes.map((m) => m.name))
     .filter((v, i, a) => a.indexOf(v) === i)
     .join(', ');
-  console.error(`Theme "${THEME_NAME}" not found. Available themes: ${available}`);
+  console.error(`Theme "${DEFAULT_THEME}" not found. Available themes: ${available}`);
   process.exit(1);
 }
 const { col: themeCol } = themeEntry;
-const themeModeId = themeCol.modes.find((m) => m.name === THEME_NAME).modeId;
-console.log(`Using theme: "${THEME_NAME}" (mode ID: ${themeModeId})`);
+
+// All theme modes available in this collection
+const allThemeModes = themeCol.modes; // [{ modeId, name }, …]
+const defaultThemeModeId = themeCol.modes.find((m) => m.name === DEFAULT_THEME).modeId;
+console.log(`Default theme: "${DEFAULT_THEME}" — generating ${allThemeModes.length} theme override blocks`);
 
 // "1. TailwindCSS" — border-radius tokens (px values)
 const twEntry  = findCollection('1. TailwindCSS');
@@ -118,8 +132,14 @@ const twModeId = twEntry ? twEntry.col.modes[0].modeId : null;
 // ---------------------------------------------------------------------------
 
 /** Recursively resolve VARIABLE_ALIAS chains to a concrete value.
- *  `preferredModeId` is tried first; on miss falls back to the first mode. */
-function resolveAlias(value, preferredModeId, depth = 0) {
+ *  `preferredModeId` is tried first; on miss falls back to the first mode.
+ *
+ *  `stopAtModes` — if provided, the resolver stops and returns the alias
+ *  object (without following it) when the alias target's valuesByMode keys
+ *  are all contained within this set.  Used to stop at the 2.Theme boundary
+ *  so that a second resolve pass can apply the correct theme mode ID.
+ */
+function resolveAlias(value, preferredModeId, stopAtModes = null, depth = 0) {
   if (depth > 10) return value;
   if (typeof value !== 'object' || value === null) return value;
   if (value.type !== 'VARIABLE_ALIAS') return value;
@@ -127,11 +147,19 @@ function resolveAlias(value, preferredModeId, depth = 0) {
   const refVar = variables[value.id];
   if (!refVar) return value; // external / library variable — leave as-is
 
+  // If this target's modes are all theme-collection modes (not semantic modes),
+  // stop here and let the caller resolve with the theme mode ID.
+  if (stopAtModes) {
+    const refModes = Object.keys(refVar.valuesByMode);
+    const allInTheme = refModes.every((m) => stopAtModes.has(m));
+    if (allInTheme) return value; // return the alias, not the resolved value
+  }
+
   const modeVal =
     refVar.valuesByMode[preferredModeId] ??
     Object.values(refVar.valuesByMode)[0];
 
-  return resolveAlias(modeVal, preferredModeId, depth + 1);
+  return resolveAlias(modeVal, preferredModeId, stopAtModes, depth + 1);
 }
 
 /** Convert a Figma {r,g,b,a} (0–1 floats) to a CSS `rgba()` string. */
@@ -143,15 +171,27 @@ function figmaColorToRgba({ r, g, b, a = 1 }) {
   return `rgba(${ri}, ${gi}, ${bi}, ${ai})`;
 }
 
-/** Fully resolve a colour variable (through semantic mode → theme palette). */
-function resolveColor(varId, semanticModeId) {
+// All mode IDs that belong to the "2. Theme" collection — used as a stop
+// boundary so that resolveAlias doesn't cross into the theme layer with the
+// wrong (semantic) mode ID.
+const themeModeIds = new Set(themeCol.modes.map((m) => m.modeId));
+
+/** Resolve a colour variable through the semantic mode → a specific theme palette.
+ *  Two-pass approach:
+ *   1. Follow the alias chain within "3. Mode" using semanticModeId, stopping
+ *      when the next target lives in "2. Theme" (detected via themeModeIds).
+ *   2. Follow the remaining alias into "2. Theme" using the correct themeModeId.
+ */
+function resolveColor(varId, semanticModeId, themeModeId) {
   const v = variables[varId];
   if (!v) return null;
   const raw = v.valuesByMode[semanticModeId];
   if (raw === undefined) return null;
 
-  const afterSemantic = resolveAlias(raw, semanticModeId);
-  const resolved      = resolveAlias(afterSemantic, themeModeId);
+  // Pass 1: resolve within the semantic layer, stop at the theme boundary
+  const atBoundary = resolveAlias(raw, semanticModeId, themeModeIds);
+  // Pass 2: follow into the theme layer with the correct theme mode ID
+  const resolved   = resolveAlias(atBoundary, themeModeId);
 
   if (typeof resolved === 'object' && resolved !== null && 'r' in resolved) {
     return figmaColorToRgba(resolved);
@@ -165,6 +205,16 @@ function pxToRem(px) {
   return `${parseFloat(r.toFixed(4).replace(/\.?0+$/, ''))}rem`;
 }
 
+/** Convert a Figma theme name to a CSS class name.
+ *  "SURF Blue" → "theme-surf-blue"
+ *  "Groenvermogen / NKPH2" → "theme-groenvermogen-nkph2"  */
+function themeNameToClass(name) {
+  return 'theme-' + name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
 // ---------------------------------------------------------------------------
 // Step 4: CSS variable name derivation
 // ---------------------------------------------------------------------------
@@ -172,7 +222,7 @@ function pxToRem(px) {
 /**
  * Derives a CSS custom property name from a Figma variable name.
  *
- *   base/foo                         → --foo        (strips "base" prefix)
+ *   base/foo                         → --foo
  *   base/sidebar-ring                → --sidebar-ring
  *   alpha/50                         → --alpha-50
  *   custom/outline                   → --custom-outline
@@ -181,42 +231,41 @@ function pxToRem(px) {
 function figmaNameToCssProp(name) {
   const segments = name.split('/');
   const prefix   = segments[0];
-
-  // Strip the "base" prefix — these are top-level shadcn semantic tokens
   const relevant = prefix === 'base' ? segments.slice(1) : segments;
 
   const sanitised = relevant
     .join('-')
-    .replace(/\\/g, '')               // \30 → 30
-    .replace(/[^a-zA-Z0-9\-]/g, '-') // any odd char → hyphen
-    .replace(/-+/g, '-')              // collapse runs
-    .replace(/^-|-$/g, '');           // trim edges
+    .replace(/\\/g, '')
+    .replace(/[^a-zA-Z0-9\-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
 
   return `--${sanitised}`;
 }
 
 // ---------------------------------------------------------------------------
-// Step 5: Collect all colour tokens from "3. Mode"
+// Step 5: Collect colour tokens for all themes
 // ---------------------------------------------------------------------------
 
-const lightTokens = {};
-const darkTokens  = {};
-
-for (const varId of modeCol.variableIds) {
-  const v = variables[varId];
-  if (!v || v.resolvedType !== 'COLOR') continue;
-
-  const cssProp  = figmaNameToCssProp(v.name);
-  const lightVal = resolveColor(varId, lightModeId);
-  const darkVal  = resolveColor(varId, darkModeId);
-
-  if (lightVal) lightTokens[cssProp] = lightVal;
-  if (darkVal)  darkTokens[cssProp]  = darkVal;
+/** Build { cssProp → rgbaString } for all colour vars in "3. Mode"
+ *  resolved through the given theme mode. */
+function collectColorTokens(semanticModeId, themeModeId) {
+  const tokens = {};
+  for (const varId of modeCol.variableIds) {
+    const v = variables[varId];
+    if (!v || v.resolvedType !== 'COLOR') continue;
+    const val = resolveColor(varId, semanticModeId, themeModeId);
+    if (val) tokens[figmaNameToCssProp(v.name)] = val;
+  }
+  return tokens;
 }
+
+// Default theme tokens
+const lightTokens = collectColorTokens(lightModeId, defaultThemeModeId);
+const darkTokens  = collectColorTokens(darkModeId,  defaultThemeModeId);
 
 // ---------------------------------------------------------------------------
 // Step 6: Collect radius tokens from "1. TailwindCSS"
-//   "border-radius/rounded-sm" → "--radius-sm" (strips "rounded-" prefix)
 // ---------------------------------------------------------------------------
 
 const radiusTokens = {};
@@ -231,8 +280,8 @@ if (twEntry && twModeId) {
     if (raw === undefined) continue;
 
     if (v.resolvedType === 'FLOAT' && v.name.startsWith('border-radius/')) {
-      const rawStep = v.name.slice('border-radius/'.length); // "rounded-sm"
-      const cssStep = rawStep.replace(/^rounded-/, '');       // "sm"
+      const rawStep = v.name.slice('border-radius/'.length);
+      const cssStep = rawStep.replace(/^rounded-/, '');
       const val     = resolveAlias(raw, twModeId);
       if (typeof val === 'number') {
         const remVal = val === 9999 ? '624.9375rem' : `${(val / 16).toFixed(4).replace(/\.?0+$/, '')}rem`;
@@ -249,81 +298,54 @@ if (twEntry && twModeId) {
 }
 
 // ---------------------------------------------------------------------------
-// Step 7: Collect all non-color tokens from "2. Theme"
-//   text/*/font-size       → --text-{scale}-font-size   (rem)
-//   text/*/line-height     → --text-{scale}-line-height  (rem)
-//   font/font-*            → resolved string (used for FONT_STACKS below)
-//   font-weight/*          → --font-weight-{name}        (unitless)
-//   radius/*               → --radius-{step}             (rem)
-//   blur/*                 → --blur-{step}               (px)
-//   breakpoint/*           → --breakpoint-{step}         (px)
-//   container/*            → --container-{step}          (px)
-//   shadow/*, drop-shadow/*, inset-shadow/* → component px values
+// Step 7: Collect all non-color tokens from "2. Theme" (default theme)
 // ---------------------------------------------------------------------------
 
 const themeNonColorTokens = {};
 
-if (themeEntry && themeModeId) {
-  for (const varId of themeCol.variableIds) {
-    const v = variables[varId];
-    if (!v || v.resolvedType === 'COLOR') continue;
+for (const varId of themeCol.variableIds) {
+  const v = variables[varId];
+  if (!v || v.resolvedType === 'COLOR') continue;
 
-    const raw = v.valuesByMode[themeModeId];
-    if (raw === undefined) continue;
-    const val = resolveAlias(raw, themeModeId);
+  const raw = v.valuesByMode[defaultThemeModeId];
+  if (raw === undefined) continue;
+  const val = resolveAlias(raw, defaultThemeModeId);
 
-    const name  = v.name;
-    const parts = name.split('/');
-    const top   = parts[0];
+  const name  = v.name;
+  const parts = name.split('/');
+  const top   = parts[0];
 
-    // text scale: font-size and line-height
-    if (top === 'text' && parts.length === 3 && typeof val === 'number') {
-      const scale = parts[1]; // "xs", "sm", "base", …
-      const prop  = parts[2]; // "font-size" | "line-height"
-      if (prop === 'font-size' || prop === 'line-height') {
-        themeNonColorTokens[`--text-${scale}-${prop}`] = pxToRem(val);
-      }
+  if (top === 'text' && parts.length === 3 && typeof val === 'number') {
+    const prop = parts[2];
+    if (prop === 'font-size' || prop === 'line-height') {
+      themeNonColorTokens[`--text-${parts[1]}-${prop}`] = pxToRem(val);
     }
-
-    // font family strings (stored as intermediate values for FONT_STACKS)
-    if (top === 'font' && parts.length === 2 && typeof val === 'string') {
-      themeNonColorTokens[`--font-${parts[1]}`] = val;
-    }
-
-    // font weight
-    if (top === 'font-weight' && parts.length === 2 && typeof val === 'number') {
-      themeNonColorTokens[`--font-weight-${parts[1]}`] = String(val);
-    }
-
-    // radius (from theme collection — same px values as TailwindCSS border-radius/*)
-    if (top === 'radius' && parts.length === 2 && typeof val === 'number') {
-      themeNonColorTokens[`--radius-${parts[1]}`] = pxToRem(val);
-    }
-
-    // blur
-    if (top === 'blur' && parts.length === 2 && typeof val === 'number') {
-      themeNonColorTokens[`--blur-${parts[1]}`] = `${val}px`;
-    }
-
-    // breakpoints
-    if (top === 'breakpoint' && parts.length === 2 && typeof val === 'number') {
-      themeNonColorTokens[`--breakpoint-${parts[1]}`] = `${val}px`;
-    }
-
-    // containers
-    if (top === 'container' && parts.length === 2 && typeof val === 'number') {
-      themeNonColorTokens[`--container-${parts[1]}`] = `${val}px`;
-    }
-
-    // shadow components
-    if ((top === 'shadow' || top === 'drop-shadow' || top === 'inset-shadow') && typeof val === 'number') {
-      themeNonColorTokens[figmaNameToCssProp(name)] = `${val}px`;
-    }
+  }
+  if (top === 'font' && parts.length === 2 && typeof val === 'string') {
+    themeNonColorTokens[`--font-${parts[1]}`] = val;
+  }
+  if (top === 'font-weight' && parts.length === 2 && typeof val === 'number') {
+    themeNonColorTokens[`--font-weight-${parts[1]}`] = String(val);
+  }
+  if (top === 'radius' && parts.length === 2 && typeof val === 'number') {
+    themeNonColorTokens[`--radius-${parts[1]}`] = pxToRem(val);
+  }
+  if (top === 'blur' && parts.length === 2 && typeof val === 'number') {
+    themeNonColorTokens[`--blur-${parts[1]}`] = `${val}px`;
+  }
+  if (top === 'breakpoint' && parts.length === 2 && typeof val === 'number') {
+    themeNonColorTokens[`--breakpoint-${parts[1]}`] = `${val}px`;
+  }
+  if (top === 'container' && parts.length === 2 && typeof val === 'number') {
+    themeNonColorTokens[`--container-${parts[1]}`] = `${val}px`;
+  }
+  if ((top === 'shadow' || top === 'drop-shadow' || top === 'inset-shadow') && typeof val === 'number') {
+    themeNonColorTokens[figmaNameToCssProp(name)] = `${val}px`;
   }
 }
 
 // ---------------------------------------------------------------------------
-// Step 8: Build font stacks from Figma font-family + CSS generic fallback
+// Step 8: Build font stacks and final :root / .dark maps
 // ---------------------------------------------------------------------------
 
 const FONT_STACKS = {
@@ -332,22 +354,77 @@ const FONT_STACKS = {
   ...fontTokens,
 };
 
-// ---------------------------------------------------------------------------
-// Step 9: Build final token maps
-// ---------------------------------------------------------------------------
-
-// :root = light colour tokens + theme non-color tokens + font stacks
 const lightMap = { ...lightTokens, ...themeNonColorTokens, ...FONT_STACKS };
-
-// Remove the intermediate "--font-font-*" keys (only needed for FONT_STACKS)
 delete lightMap['--font-font-sans'];
 delete lightMap['--font-font-serif'];
 delete lightMap['--font-font-mono'];
 
-// .dark = only properties that actually differ from light
 const darkDiff = {};
 for (const [prop, val] of Object.entries(darkTokens)) {
   if (val !== lightTokens[prop]) darkDiff[prop] = val;
+}
+
+// ---------------------------------------------------------------------------
+// Step 9: Compute per-theme overrides (light and dark diffs vs default)
+// ---------------------------------------------------------------------------
+
+/**
+ * For each non-default theme, resolve its colour tokens and compute the diff
+ * against the default theme. Returns an array of:
+ *   { name, className, lightDiff, darkDiff }
+ */
+const themeOverrides = [];
+
+for (const { modeId, name } of allThemeModes) {
+  if (name === DEFAULT_THEME) continue;
+
+  const themeLight = collectColorTokens(lightModeId, modeId);
+  const themeDark  = collectColorTokens(darkModeId,  modeId);
+
+  // Only emit vars that differ from the default theme
+  const lightDiff = {};
+  for (const [prop, val] of Object.entries(themeLight)) {
+    if (val !== lightTokens[prop]) lightDiff[prop] = val;
+  }
+
+  const themeDarkDiff = {};
+  for (const [prop, val] of Object.entries(themeDark)) {
+    if (val !== darkTokens[prop]) themeDarkDiff[prop] = val;
+  }
+
+  // Also check font stacks (font-family can differ per theme)
+  const themeFontSans = (() => {
+    const raw = themeCol.variableIds
+      .map((id) => variables[id])
+      .find((v) => v?.name === 'font/font-sans');
+    if (!raw) return null;
+    const val = resolveAlias(raw.valuesByMode[modeId], modeId);
+    return typeof val === 'string' ? `${val}, sans-serif` : null;
+  })();
+  const themeFontMono = (() => {
+    const raw = themeCol.variableIds
+      .map((id) => variables[id])
+      .find((v) => v?.name === 'font/font-mono');
+    if (!raw) return null;
+    const val = resolveAlias(raw.valuesByMode[modeId], modeId);
+    return typeof val === 'string' ? `${val}, monospace` : null;
+  })();
+
+  if (themeFontSans && themeFontSans !== FONT_STACKS['--font-sans']) {
+    lightDiff['--font-sans'] = themeFontSans;
+  }
+  if (themeFontMono && themeFontMono !== FONT_STACKS['--font-mono']) {
+    lightDiff['--font-mono'] = themeFontMono;
+  }
+
+  if (Object.keys(lightDiff).length === 0 && Object.keys(themeDarkDiff).length === 0) continue;
+
+  themeOverrides.push({
+    name,
+    className: themeNameToClass(name),
+    lightDiff,
+    darkDiff: themeDarkDiff,
+  });
 }
 
 console.log('\nTokens collected:');
@@ -355,23 +432,18 @@ console.log(`  :root properties     : ${Object.keys(lightMap).length}`);
 console.log(`  .dark overrides      : ${Object.keys(darkDiff).length}`);
 console.log(`  @theme radius tokens : ${Object.keys(radiusTokens).length}`);
 console.log(`  theme non-color vars : ${Object.keys(themeNonColorTokens).length}`);
+console.log(`  theme override sets  : ${themeOverrides.length}`);
+themeOverrides.forEach(({ name, lightDiff, darkDiff }) => {
+  console.log(`    .${themeNameToClass(name)}: ${Object.keys(lightDiff).length} light, ${Object.keys(darkDiff).length} dark`);
+});
 
 // ---------------------------------------------------------------------------
 // Step 10: CSS block builders
 // ---------------------------------------------------------------------------
 
-/**
- * @theme inline block — Tailwind v4 bridge.
- *
- * Colour tokens → --color-* aliases.
- * Font stacks   → self-referential var() (required by Tailwind v4).
- * Text scale    → --text-{scale} self-referential bridges.
- * Radius        → concrete rem values.
- */
 function buildThemeBlock(radius) {
   const lines = [];
 
-  // Preferred output order for colour bridges (mirrors original figma.css)
   const COLOR_ORDER = [
     '--background', '--foreground',
     '--font-sans', '--font-mono',
@@ -389,7 +461,6 @@ function buildThemeBlock(radius) {
     '--card-foreground', '--card',
   ];
 
-  // Only actual colour tokens get --color-* bridges
   const colorProps = Object.keys(lightTokens);
   const emitted    = new Set();
 
@@ -400,28 +471,20 @@ function buildThemeBlock(radius) {
     }
   }
   for (const prop of colorProps) {
-    if (!emitted.has(prop)) {
-      lines.push(`    --color-${prop.slice(2)}: var(${prop});`);
-    }
+    if (!emitted.has(prop)) lines.push(`    --color-${prop.slice(2)}: var(${prop});`);
   }
 
-  // Font bridges (self-referential — required by Tailwind v4)
   for (const prop of Object.keys(FONT_STACKS)) {
     lines.push(`    ${prop}: var(${prop});`);
   }
 
-  // Text-scale bridges: Tailwind v4 --text-{scale} = font-size,
-  // --text-{scale}--line-height = line-height
+  const SCALE_ORDER = ['xs', 'sm', 'base', 'lg', 'xl', '2xl', '3xl', '4xl', '5xl', '6xl', '7xl', '8xl', '9xl'];
   const textScales = [...new Set(
     Object.keys(themeNonColorTokens)
       .filter((p) => p.startsWith('--text-') && p.endsWith('-font-size'))
       .map((p) => p.replace(/^--text-/, '').replace(/-font-size$/, '')),
-  )];
-  // Sort by Tailwind scale order
-  const SCALE_ORDER = ['xs', 'sm', 'base', 'lg', 'xl', '2xl', '3xl', '4xl', '5xl', '6xl', '7xl', '8xl', '9xl'];
-  textScales.sort((a, b) => {
-    const ai = SCALE_ORDER.indexOf(a);
-    const bi = SCALE_ORDER.indexOf(b);
+  )].sort((a, b) => {
+    const ai = SCALE_ORDER.indexOf(a), bi = SCALE_ORDER.indexOf(b);
     return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
   });
   for (const scale of textScales) {
@@ -431,7 +494,6 @@ function buildThemeBlock(radius) {
     }
   }
 
-  // Radius values
   const RADIUS_ORDER = ['none', 'xs', 'sm', 'md', 'lg', 'xl', '2xl', '3xl', '4xl', 'full'];
   const emittedR = new Set();
   for (const step of RADIUS_ORDER) {
@@ -445,12 +507,9 @@ function buildThemeBlock(radius) {
   return `@theme inline {\n${lines.join('\n')}\n}`;
 }
 
-function buildRootBlock(props) {
-  return `:root {\n${Object.entries(props).map(([p, v]) => `    ${p}: ${v};`).join('\n')}\n}`;
-}
-
-function buildDarkBlock(props) {
-  return `.dark {\n${Object.entries(props).map(([p, v]) => `    ${p}: ${v};`).join('\n')}\n}`;
+function buildBlock(selector, props) {
+  const lines = Object.entries(props).map(([p, v]) => `    ${p}: ${v};`);
+  return `${selector} {\n${lines.join('\n')}\n}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -460,11 +519,24 @@ function buildDarkBlock(props) {
 StyleDictionary.registerFormat({
   name: 'css/figma-shadcn',
   format({ options }) {
-    const { lightMap, darkDiff, radius } = options;
-    const themeBlock = buildThemeBlock(radius);
-    const rootBlock  = buildRootBlock(lightMap);
-    const darkBlock  = buildDarkBlock(darkDiff);
-    return [themeBlock, rootBlock, darkBlock].join('\n\n') + '\n';
+    const { lightMap, darkDiff, radius, themeOverrides } = options;
+    const blocks = [
+      buildThemeBlock(radius),
+      buildBlock(':root', lightMap),
+      buildBlock('.dark', darkDiff),
+    ];
+
+    for (const { className, lightDiff, darkDiff: tDarkDiff } of themeOverrides) {
+      if (Object.keys(lightDiff).length > 0) {
+        blocks.push(`/* ${className} */`);
+        blocks.push(buildBlock(`.${className}`, lightDiff));
+      }
+      if (Object.keys(tDarkDiff).length > 0) {
+        blocks.push(buildBlock(`.dark.${className}`, tDarkDiff));
+      }
+    }
+
+    return blocks.join('\n\n') + '\n';
   },
 });
 
@@ -478,7 +550,7 @@ const sd = new StyleDictionary({
         {
           destination: outputFile,
           format: 'css/figma-shadcn',
-          options: { lightMap, darkDiff, radius: radiusTokens },
+          options: { lightMap, darkDiff, radius: radiusTokens, themeOverrides },
         },
       ],
     },
