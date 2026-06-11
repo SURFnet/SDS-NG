@@ -86,8 +86,9 @@ function AvatarGroup({ className, ...props }: React.ComponentProps<"div">) {
 
 function AvatarGroupCount({
   className,
+  count,
   ...props
-}: React.ComponentProps<"div">) {
+}: React.ComponentProps<"div"> & { count?: number }) {
   return (
     <div
       data-slot="avatar-group-count"
@@ -96,7 +97,9 @@ function AvatarGroupCount({
         className
       )}
       {...props}
-    />
+    >
+      {count !== undefined ? `+${count}` : props.children}
+    </div>
   )
 }
 

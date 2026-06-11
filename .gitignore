@@ -24,3 +24,9 @@ dist-ssr
 *.sw?
 spieldata
 NOTES.md
+
+# Local environment variables (contains secrets)
+.env
+.env.local
+
+PoC.pdf
