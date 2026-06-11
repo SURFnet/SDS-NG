@@ -62,3 +62,6 @@ export * from './hooks/use-mobile'
 
 // Utilities
 export * from './lib/utils'
+
+// Third-party re-exports
+export { toast } from 'sonner'
