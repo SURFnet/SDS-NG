@@ -1662,7 +1662,7 @@
     "@tailwindcss/oxide" "4.3.0"
     tailwindcss "4.3.0"
 
-"@tanstack/react-table@^8.21.3":
+"@tanstack/react-table@^8.0.0":
   version "8.21.3"
   resolved "https://registry.yarnpkg.com/@tanstack/react-table/-/react-table-8.21.3.tgz#2c38c747a5731c1a07174fda764b9c2b1fb5e91b"
   integrity sha512-5nNMTSETP4ykGegmVkhjcS8tTLW6Vl4axfEGQN3v0zdHYbK4UfoqfPChclTrJ4EoK9QynqAu9oUf8VEmrpZ5Ww==
@@ -4304,7 +4304,7 @@ setprototypeof@~1.2.0:
 
 shadcn@^4.11.0:
   version "4.11.0"
-  resolved "https://registry.npmjs.org/shadcn/-/shadcn-4.11.0.tgz"
+  resolved "https://registry.yarnpkg.com/shadcn/-/shadcn-4.11.0.tgz#e77d8c5a85e97a65c0488adc7f4712a7a749ca70"
   integrity sha512-UV0cchFea9hO7poV1CuEP0wvmYjpAqcxCKdy23bndl2Du2ARtDs8A4xdzfhUjDBeOW1nNpJ6lXmsEpsply2SfQ==
   dependencies:
     "@babel/core" "^7.28.0"
