@@ -25,9 +25,10 @@ The following must be installed in the consuming project:
 | `react`       | `^18` or `^19` |
 | `react-dom`   | `^18` or `^19` |
 | `tailwindcss` | `^4`           |
+| `@tanstack/react-table` | `^8`           |
 
 ```bash
-yarn install react react-dom tailwindcss
+yarn install react react-dom tailwindcss @tanstack/react-table
 ```
 
 ---
@@ -385,22 +386,22 @@ import {useIsMobile} from '@surfnet/sds-ng' // responsive mobile detection hook
 
 ```bash
 # Install dependencies
-npm install
+yarn install
 
 # Start the Vite dev server (for testing in a sandbox app)
-npm run dev
+yarn dev
 
 # Build the library (JS + type declarations)
-npm run build
+yarn build
 
 # Build JS only
-npm run build:js
+yarn build:js
 
 # Build type declarations only
-npm run build:types
+yarn build:types
 
 # Lint
-npm run lint
+yarn lint
 ```
 
 ### Adding a new shadcn component
